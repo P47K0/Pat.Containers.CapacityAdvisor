@@ -1,0 +1,133 @@
+name: Advisor Docker Deploy
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: dev
+    permissions:
+      contents: read
+      id-token: write
+
+    env:
+      IMAGE_TAG: gha-${{ github.run_id }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+      ACA_ENV_NAME: ${{ vars.ACA_ENVIRONMENT_NAME }}
+      CONTAINER_APP_NAME: capacity-advisor
+      IMAGE_NAME: capacity-advisor
+
+      PLATFORMCOLLECTORS__ACA__SUBSCRIPTIONID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      PLATFORMCOLLECTORS__ACA__RESOURCEGROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      PLATFORMCOLLECTORS__ACA__CONTAINERAPPNAME: ${{ vars.ADVISOR_TARGET_CONTAINER_APP_NAME }}
+      PLATFORMCOLLECTORS__ACA__ENVIRONMENTNAME: ${{ vars.ACA_ENVIRONMENT_NAME }}
+      PLATFORMCOLLECTORS__ACA__CONTAINERNAME: ${{ vars.ADVISOR_TARGET_CONTAINER_NAME }}
+      PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES: ${{ vars.ADVISOR_METRIC_WINDOW_MINUTES }}
+
+      CLOUDFLAREAI__ACCOUNTID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLAREAI__MODEL: ${{ vars.CLOUDFLARE_MODEL }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Debug folder structure
+        run: |
+          ls -la
+          echo "-------------------"
+          ls -la Pat.Containers.CapacityAdvisor || echo "Pat.Containers.CapacityAdvisor folder not found"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push Advisor
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Pat.Containers.CapacityAdvisor/Dockerfile
+          push: true
+          tags: ${{ vars.DOCKERHUB_USERNAME }}/capacity-advisor:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Create or update Container App secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            az containerapp secret set \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --secrets \
+                cloudflare-api-token="${{ secrets.CLOUDFLARE_API_TOKEN }}"
+          fi
+
+      - name: Deploy Advisor
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          IMAGE="$DOCKERHUB_USERNAME/$IMAGE_NAME:$IMAGE_TAG"
+
+          echo "Deploying image: $IMAGE"
+
+          if az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
+            echo "Container App exists → Updating..."
+            az containerapp update \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --image "$IMAGE" \
+              --set-env-vars \
+                PlatformCollectors__Aca__SubscriptionId="$PLATFORMCOLLECTORS__ACA__SUBSCRIPTIONID" \
+                PlatformCollectors__Aca__ResourceGroup="$PLATFORMCOLLECTORS__ACA__RESOURCEGROUP" \
+                PlatformCollectors__Aca__ContainerAppName="$PLATFORMCOLLECTORS__ACA__CONTAINERAPPNAME" \
+                PlatformCollectors__Aca__EnvironmentName="$PLATFORMCOLLECTORS__ACA__ENVIRONMENTNAME" \
+                PlatformCollectors__Aca__ContainerName="$PLATFORMCOLLECTORS__ACA__CONTAINERNAME" \
+                PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
+                CloudflareAi__AccountId="$CLOUDFLAREAI__ACCOUNTID" \
+                CloudflareAi__Model="$CLOUDFLAREAI__MODEL" \
+                CloudflareAi__ApiToken=secretref:cloudflare-api-token \
+              --revision-suffix "adv-${{ github.run_number }}"
+          else
+            echo "Container App does not exist → Creating..."
+            az containerapp create \
+              --name "$CONTAINER_APP_NAME" \
+              --resource-group "$RESOURCE_GROUP" \
+              --environment "$ACA_ENV_NAME" \
+              --image "$IMAGE" \
+              --ingress internal \
+              --target-port 8080 \
+              --revision-suffix "adv-${{ github.run_number }}" \
+              --cpu 0.25 \
+              --memory 0.5Gi \
+              --min-replicas 0 \
+              --max-replicas 1 \
+              --secrets \
+                cloudflare-api-token="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
+              --env-vars \
+                PlatformCollectors__Aca__SubscriptionId="$PLATFORMCOLLECTORS__ACA__SUBSCRIPTIONID" \
+                PlatformCollectors__Aca__ResourceGroup="$PLATFORMCOLLECTORS__ACA__RESOURCEGROUP" \
+                PlatformCollectors__Aca__ContainerAppName="$PLATFORMCOLLECTORS__ACA__CONTAINERAPPNAME" \
+                PlatformCollectors__Aca__EnvironmentName="$PLATFORMCOLLECTORS__ACA__ENVIRONMENTNAME" \
+                PlatformCollectors__Aca__ContainerName="$PLATFORMCOLLECTORS__ACA__CONTAINERNAME" \
+                PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
+                CloudflareAi__AccountId="$CLOUDFLAREAI__ACCOUNTID" \
+                CloudflareAi__Model="$CLOUDFLAREAI__MODEL" \
+                CloudflareAi__ApiToken=secretref:cloudflare-api-token
+          fi
