@@ -73,9 +73,7 @@ jobs:
           if az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
             az containerapp secret set \
               --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --secrets \
-                cloudflare-api-token="${{ secrets.CLOUDFLARE_API_TOKEN }}"
+              --resource-group "$RESOURCE_GROUP"
           fi
 
       - name: Deploy Advisor
