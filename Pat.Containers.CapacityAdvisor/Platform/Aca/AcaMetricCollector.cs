@@ -114,7 +114,7 @@ public sealed class AcaPlatformMetricCollector : IPlatformMetricCollector
     {
         var milliCores = await QueryMetricAverageAsync(
             resourceId.ToString(),
-            "CpuUsage",
+            "UsageNanoCores",
             cancellationToken);
 
         if (milliCores is null)
@@ -132,7 +132,7 @@ public sealed class AcaPlatformMetricCollector : IPlatformMetricCollector
     {
         var bytes = await QueryMetricAverageAsync(
             resourceId.ToString(),
-            "MemoryWorkingSetBytes",
+            "WorkingSetBytes",
             cancellationToken);
 
         if (bytes is null)
