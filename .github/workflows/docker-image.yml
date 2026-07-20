@@ -26,8 +26,8 @@ jobs:
       PLATFORMCOLLECTORS__ACA__CONTAINERNAME: ${{ vars.ADVISOR_TARGET_CONTAINER_NAME }}
       PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES: ${{ vars.ADVISOR_METRIC_WINDOW_MINUTES }}
 
-      CLOUDFLAREAI__ACCOUNTID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLAREAI__MODEL: ${{ vars.CLOUDFLARE_MODEL }}
+      AIAGENT__URL: ${{ vars.AGENT_URL }}
+      AIAGENT__APIKEY: ${{ secrets.CF_API_KEY }}
 
     steps:
       - name: Checkout
@@ -100,9 +100,8 @@ jobs:
                 PlatformCollectors__Aca__EnvironmentName="$PLATFORMCOLLECTORS__ACA__ENVIRONMENTNAME" \
                 PlatformCollectors__Aca__ContainerName="$PLATFORMCOLLECTORS__ACA__CONTAINERNAME" \
                 PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
-                CloudflareAi__AccountId="$CLOUDFLAREAI__ACCOUNTID" \
-                CloudflareAi__Model="$CLOUDFLAREAI__MODEL" \
-                CloudflareAi__ApiToken=secretref:cloudflare-api-token \
+                AiAgent__Url="$AIAGENT__URL" \
+                AiAgent__ApiKey="$AIAGENT__APIKEY" \
               --revision-suffix "adv-${{ github.run_number }}"
           else
             echo "Container App does not exist → Creating..."
@@ -127,7 +126,6 @@ jobs:
                 PlatformCollectors__Aca__EnvironmentName="$PLATFORMCOLLECTORS__ACA__ENVIRONMENTNAME" \
                 PlatformCollectors__Aca__ContainerName="$PLATFORMCOLLECTORS__ACA__CONTAINERNAME" \
                 PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
-                CloudflareAi__AccountId="$CLOUDFLAREAI__ACCOUNTID" \
-                CloudflareAi__Model="$CLOUDFLAREAI__MODEL" \
-                CloudflareAi__ApiToken=secretref:cloudflare-api-token
+                AiAgent__Url="$AIAGENT__URL" \
+                AiAgent__ApiKey="$AIAGENT__APIKEY"
           fi
