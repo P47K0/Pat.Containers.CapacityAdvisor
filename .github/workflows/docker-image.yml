@@ -117,8 +117,6 @@ jobs:
               --memory 0.5Gi \
               --min-replicas 0 \
               --max-replicas 1 \
-              --secrets \
-                cloudflare-api-token="${{ secrets.CLOUDFLARE_API_TOKEN }}" \
               --env-vars \
                 PlatformCollectors__Aca__SubscriptionId="$PLATFORMCOLLECTORS__ACA__SUBSCRIPTIONID" \
                 PlatformCollectors__Aca__ResourceGroup="$PLATFORMCOLLECTORS__ACA__RESOURCEGROUP" \
