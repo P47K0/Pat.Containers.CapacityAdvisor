@@ -9,14 +9,11 @@ public sealed class CloudflareAiOptionsValidator : IValidateOptions<CloudflareAi
     {
         var failures = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(options.AccountId))
-            failures.Add("CloudflareAi:AccountId is required.");
+        if (string.IsNullOrWhiteSpace(options.Url))
+            failures.Add("CloudflareAi:Url is required.");
 
-        if (string.IsNullOrWhiteSpace(options.ApiToken))
-            failures.Add("CloudflareAi:ApiToken is required.");
-
-        if (string.IsNullOrWhiteSpace(options.Model))
-            failures.Add("CloudflareAi:Model is required.");
+        if (string.IsNullOrWhiteSpace(options.ApiKey))
+            failures.Add("CloudflareAi:ApiKey is required.");
 
         return failures.Count > 0
             ? ValidateOptionsResult.Fail(failures)

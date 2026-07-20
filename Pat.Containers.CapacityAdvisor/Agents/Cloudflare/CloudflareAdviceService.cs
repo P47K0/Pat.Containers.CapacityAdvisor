@@ -33,11 +33,10 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
         LlmAdviceRequest request,
         CancellationToken cancellationToken = default)
     {
-        var endpoint =
-            $"https://api.cloudflare.com/client/v4/accounts/{_options.AccountId}/ai/run/{_options.Model}";
+        var endpoint =  _options.Url;
 
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
-        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiToken);
+        httpRequest.Headers.Add("x-api-key", _options.ApiKey);
 
         var prompt = BuildPrompt(request);
 

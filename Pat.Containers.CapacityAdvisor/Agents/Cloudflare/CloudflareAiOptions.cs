@@ -2,9 +2,8 @@
 
 public sealed class CloudflareAiOptions
 {
-    public const string SectionName = "CloudflareAi";
+    public const string SectionName = "AiAgent";
 
-    public string AccountId { get; init; } = default!;
-    public string ApiToken { get; init; } = default!;
-    public string Model { get; init; } = "@cf/meta/llama-3.1-8b-instruct";
+    public string Url { get; init; } = default!;
+    public string ApiKey { get; init; } = default!;
 }
