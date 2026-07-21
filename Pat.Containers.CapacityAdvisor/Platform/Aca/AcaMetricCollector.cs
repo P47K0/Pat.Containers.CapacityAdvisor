@@ -112,18 +112,18 @@ public sealed class AcaPlatformMetricCollector : IPlatformMetricCollector
         ResourceIdentifier resourceId,
         CancellationToken cancellationToken)
     {
-        var milliCores = await QueryMetricAverageAsync(
+        var nanoCores = await QueryMetricAverageAsync(
             resourceId.ToString(),
             "UsageNanoCores",
             cancellationToken);
 
-        if (milliCores is null)
+        if (nanoCores is null)
         {
             _logger.LogWarning("CPU metric not found for resource {ResourceId}. Falling back to 0.", resourceId);
             return 0;
         }
 
-        return milliCores.Value / 1000d;
+        return nanoCores.Value / 1_000_000_000d;
     }
 
     private async Task<double> GetMemoryUsageMbAsync(
