@@ -27,7 +27,9 @@ jobs:
       PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES: ${{ vars.ADVISOR_METRIC_WINDOW_MINUTES }}
 
       AIAGENT__URL: ${{ vars.AGENT_URL }}
-      AIAGENT__APIKEY: ${{ secrets.CF_API_KEY }}
+      AIAGENT__API_KEY: ${{ secrets.CF_API_KEY }}
+
+      ASSESSMENT_API_KEY: ${{ secrets.ASSESSMENT_API_KEY }}
 
     steps:
       - name: Checkout
@@ -70,14 +72,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          if az containerapp show --name "$CONTAINER_APP_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
-            az containerapp secret set \
-              --name "$CONTAINER_APP_NAME" \
-              --resource-group "$RESOURCE_GROUP" \
-              --secrets \
-                cloudflare-api-token="${{ secrets.CLOUDFLARE_API_TOKEN }}"
-          fi
-
       - name: Deploy Advisor
         shell: bash
         run: |
@@ -101,7 +95,8 @@ jobs:
                 PlatformCollectors__Aca__ContainerName="$PLATFORMCOLLECTORS__ACA__CONTAINERNAME" \
                 PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
                 AiAgent__Url="$AIAGENT__URL" \
-                AiAgent__ApiKey="$AIAGENT__APIKEY" \
+                AiAgent__ApiKey="$AIAGENT__API_KEY" \
+                AssessmentApiKey="$ASSESSMENT_API_KEY" \
               --revision-suffix "adv-${{ github.run_number }}"
           else
             echo "Container App does not exist → Creating..."
@@ -110,7 +105,7 @@ jobs:
               --resource-group "$RESOURCE_GROUP" \
               --environment "$ACA_ENV_NAME" \
               --image "$IMAGE" \
-              --ingress internal \
+              --ingress external \
               --target-port 8080 \
               --revision-suffix "adv-${{ github.run_number }}" \
               --cpu 0.25 \
@@ -125,5 +120,6 @@ jobs:
                 PlatformCollectors__Aca__ContainerName="$PLATFORMCOLLECTORS__ACA__CONTAINERNAME" \
                 PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
                 AiAgent__Url="$AIAGENT__URL" \
-                AiAgent__ApiKey="$AIAGENT__APIKEY"
+                AiAgent__ApiKey="$AIAGENT__API_KEY" \
+                AssessmentApiKey="$ASSESSMENT_API_KEY"
           fi
