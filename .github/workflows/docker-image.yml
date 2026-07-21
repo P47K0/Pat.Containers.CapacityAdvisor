@@ -105,7 +105,7 @@ jobs:
               --resource-group "$RESOURCE_GROUP" \
               --environment "$ACA_ENV_NAME" \
               --image "$IMAGE" \
-              --ingress internal \
+              --ingress external \
               --target-port 8080 \
               --revision-suffix "adv-${{ github.run_number }}" \
               --cpu 0.25 \
