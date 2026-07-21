@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using Pat.Containers.CapacityAdvisor.Agents.Cloudflare;
 using Pat.Containers.CapacityAdvisor.Contracts;
 using Pat.Containers.CapacityAdvisor.Hubs;
+using Pat.Containers.CapacityAdvisor.Middleware;
 using Pat.Containers.CapacityAdvisor.Options;
 using Pat.Containers.CapacityAdvisor.Platform.Aca;
 using Pat.Containers.CapacityAdvisor.Services;
@@ -47,5 +48,9 @@ app.UseSwaggerUI();
 
 app.MapControllers();
 app.MapHealthChecks("/health");
+
+app.UseWhen(
+    ctx => ctx.Request.Path.StartsWithSegments("/api/assessment/run"),
+    branch => branch.UseMiddleware<ApiKeyCheckMiddleware>());
 
 app.Run();
