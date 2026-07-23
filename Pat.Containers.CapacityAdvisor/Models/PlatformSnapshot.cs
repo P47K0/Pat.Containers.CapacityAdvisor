@@ -1,6 +1,6 @@
 ﻿namespace Pat.Containers.CapacityAdvisor.Models;
 
-public sealed class PlatformSnapshot
+public class PlatformSnapshot
 {
     public string Platform { get; init; } = default!;
     public DateTimeOffset CollectedAtUtc { get; init; }

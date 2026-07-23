@@ -18,4 +18,12 @@ public sealed class LlmAdviceRequest
 
     public string DeterministicStatus { get; init; } = default!;
     public string DeterministicReason { get; init; } = default!;
+
+    public string? AdviceMode { get; set; }
+    public bool CanAssessNodeFit { get; set; }
+    public bool CanAssessNeedForNewNode { get; set; }
+    public bool FitsExistingNode { get; set; }
+    public bool NeedsNewNode { get; set; }
+    public string? RecommendedNode { get; set; }
+    public List<LlmNodeAdviceInput> Nodes { get; set; } = [];
 }

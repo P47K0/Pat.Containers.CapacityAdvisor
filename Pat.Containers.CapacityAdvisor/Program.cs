@@ -5,6 +5,7 @@ using Pat.Containers.CapacityAdvisor.Hubs;
 using Pat.Containers.CapacityAdvisor.Middleware;
 using Pat.Containers.CapacityAdvisor.Options;
 using Pat.Containers.CapacityAdvisor.Platform.Aca;
+using Pat.Containers.CapacityAdvisor.Platform.Aks;
 using Pat.Containers.CapacityAdvisor.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -23,7 +24,17 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddHealthChecks();
 
-builder.Services.AddAcaMetricCollector(builder.Configuration);
+var platform = builder.Configuration["TargetPlatform"];
+
+if (string.Equals(platform, "AKS", StringComparison.OrdinalIgnoreCase))
+{
+    builder.Services.AddAksMetricCollector(builder.Configuration);
+}
+else
+{
+    builder.Services.AddAcaMetricCollector(builder.Configuration);
+}
+
 builder.Services.AddScoped<ICapacityAdvisorService, CapacityAdvisorService>();
 builder.Services.AddHttpClient<IAdviceExplanationService, CloudflareAdviceService>();
 builder.Services.AddSingleton<IValidateOptions<CloudflareAiOptions>, CloudflareAiOptionsValidator>();

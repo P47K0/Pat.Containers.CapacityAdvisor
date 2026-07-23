@@ -5,6 +5,7 @@ using Pat.Containers.CapacityAdvisor.Models;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Xml.Linq;
 
 namespace Pat.Containers.CapacityAdvisor.Services;
 
@@ -33,7 +34,7 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
         LlmAdviceRequest request,
         CancellationToken cancellationToken = default)
     {
-        var endpoint =  _options.Url;
+        var endpoint = _options.Url;
 
         using var httpRequest = new HttpRequestMessage(HttpMethod.Post, endpoint);
         httpRequest.Headers.Add("x-api-key", _options.ApiKey);
@@ -53,6 +54,8 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
                               Do not invent metrics.
                               Do not recommend actions outside the supplied evidence.
                               Focus on workload fit, saturation risk, and overcommitment risk.
+                              For Kubernetes and AKS, treat resource requests as the basis for scheduling decisions.
+                              If the prompt says node-fit telemetry is unavailable, do not infer node placement or scale-out requirements.
                               Return only valid JSON that matches the requested schema.
                               """
                 },
@@ -201,6 +204,13 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
 
     private static string BuildPrompt(LlmAdviceRequest request)
     {
+        return string.Equals(request.Platform, "AKS", StringComparison.OrdinalIgnoreCase)
+            ? BuildAksPrompt(request)
+            : BuildAcaPrompt(request);
+    }
+
+    private static string BuildAcaPrompt(LlmAdviceRequest request)
+    {
         return
 $"""
 Assess this workload and provide concise operational advice.
@@ -225,6 +235,58 @@ Instructions:
 - Suggest follow-up operational checks.
 - Do not invent missing telemetry.
 """;
+    }
+
+    private static string BuildAksPrompt(LlmAdviceRequest request)
+    {
+        var builder = new StringBuilder();
+
+        builder.AppendLine("Assess this AKS workload and provide concise operational advice.");
+        builder.AppendLine();
+        builder.AppendLine("Facts:");
+        builder.AppendLine($"- Platform: {request.Platform}");
+        builder.AppendLine($"- Workload: {request.WorkloadName}");
+        builder.AppendLine($"- Replicas: {request.CurrentReplicas}");
+        builder.AppendLine($"- Advice mode: {request.AdviceMode ?? "unknown"}");
+        builder.AppendLine($"- CPU usage: {request.CpuUsagePercent:F1}%");
+        builder.AppendLine($"- Memory usage: {request.MemoryUsagePercent:F1}%");
+        builder.AppendLine($"- CPU request cores: {request.CpuRequestCores:F2}");
+        builder.AppendLine($"- CPU limit cores: {request.CpuLimitCores:F2}");
+        builder.AppendLine($"- Memory request MB: {request.MemoryRequestMb:F0}");
+        builder.AppendLine($"- Memory limit MB: {request.MemoryLimitMb:F0}");
+        builder.AppendLine($"- Can assess node fit: {request.CanAssessNodeFit}");
+        builder.AppendLine($"- Can assess need for new node: {request.CanAssessNeedForNewNode}");
+        builder.AppendLine($"- Fits existing node: {request.FitsExistingNode}");
+        builder.AppendLine($"- Needs new node: {request.NeedsNewNode}");
+        builder.AppendLine($"- Recommended node: {request.RecommendedNode ?? "n/a"}");
+        builder.AppendLine($"- Deterministic status: {request.DeterministicStatus}");
+        builder.AppendLine($"- Deterministic reason: {request.DeterministicReason}");
+
+        if (request.Nodes.Count > 0)
+        {
+            builder.AppendLine();
+            builder.AppendLine("Node facts: ");
+
+            foreach (var node in request.Nodes)
+        {
+            builder.AppendLine(
+                $"- Node {node.NodeName}: allocatable CPU {node.CpuAllocatableCores:F2} cores, allocatable memory {node.MemoryAllocatableMb:F0} MB, requested CPU {node.CpuRequestedCores:F2} cores, requested memory {node.MemoryRequestedMb:F0} MB, free CPU by requests {node.FreeCpuByRequests:F2} cores, free memory by requests {node.FreeMemoryByRequestsMb:F0} MB");
+        }
+    }
+
+    builder.AppendLine();
+        builder.AppendLine("Instructions:");
+        builder.AppendLine("- For AKS, node fit is determined by resource requests, not limits.");
+        builder.AppendLine("- Use only the supplied facts.");
+        builder.AppendLine("- If advice mode is Full, you may comment on node fit and whether a new node is needed.");
+        builder.AppendLine("- If advice mode is LimitOnly, do not comment on node fit or adding a node.");
+        builder.AppendLine("- In LimitOnly mode, only advise whether CPU limit, memory limit, or both should be increased.");
+        builder.AppendLine("- Mention whether the main concern is CPU, memory, both, or insufficient telemetry.");
+        builder.AppendLine("- Keep the advice practical and short.");
+        builder.AppendLine("- Suggest follow-up operational checks.");
+        builder.AppendLine("- Do not invent missing telemetry.");
+
+        return builder.ToString();
     }
 
     private static string? ExtractJsonText(JsonElement resultElement)

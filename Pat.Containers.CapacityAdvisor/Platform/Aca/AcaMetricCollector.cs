@@ -122,7 +122,7 @@ public sealed class AcaPlatformMetricCollector : IPlatformMetricCollector
             _logger.LogWarning("CPU metric not found for resource {ResourceId}. Falling back to 0.", resourceId);
             return 0;
         }
-
+        
         return nanoCores.Value / 1_000_000_000d;
     }
 
