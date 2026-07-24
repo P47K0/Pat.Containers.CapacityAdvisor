@@ -69,12 +69,36 @@
                             prometheusSnapshot.MemoryRequestMb,
                             prometheusSnapshot.CpuLimitCores,
                             prometheusSnapshot.MemoryLimitMb);
+
                         return MetricCollectionResult.Ok(prometheusSnapshot);
                     }
 
                     _logger.LogWarning(
-                        "Prometheus query endpoint configured but no usable data returned for AKS cluster {ClusterName}. Falling back to Kubernetes workload spec.",
+                        "Prometheus query endpoint configured but no usable data returned for AKS cluster {ClusterName}. Falling back to Kubernetes Metrics API.",
                         _options.ClusterName);
+                }
+
+                var metricsApiSnapshot = await TryCollectFromMetricsApiAsync(
+                    clusterResourceId.ToString(),
+                    cancellationToken);
+
+                if (metricsApiSnapshot is not null)
+                {
+                    _logger.LogInformation(
+                        "Fetched AKS pod usage via Kubernetes Metrics API for cluster {ClusterName}, namespace {Namespace}, workload {WorkloadName}. Replicas={Replicas}, CpuUsageCores={CpuUsageCores}, MemoryUsageMb={MemoryUsageMb}, CpuRequestCores={CpuRequestCores}, MemoryRequestMb={MemoryRequestMb}, CpuLimitCores={CpuLimitCores}, MemoryLimitMb={MemoryLimitMb}, NodeCount={NodeCount}",
+                        metricsApiSnapshot.ClusterName,
+                        metricsApiSnapshot.Namespace,
+                        metricsApiSnapshot.WorkloadName,
+                        metricsApiSnapshot.CurrentReplicas,
+                        metricsApiSnapshot.CpuUsageCores,
+                        metricsApiSnapshot.MemoryUsageMb,
+                        metricsApiSnapshot.CpuRequestCores,
+                        metricsApiSnapshot.MemoryRequestMb,
+                        metricsApiSnapshot.CpuLimitCores,
+                        metricsApiSnapshot.MemoryLimitMb,
+                        metricsApiSnapshot.Nodes.Count);
+
+                    return MetricCollectionResult.Ok(metricsApiSnapshot);
                 }
 
                 var specSnapshot = await TryCollectFromKubernetesSpecAsync(
@@ -94,7 +118,6 @@
                         specSnapshot.CpuLimitCores,
                         specSnapshot.MemoryLimitMb,
                         specSnapshot.Nodes.Count);
-
 
                     return MetricCollectionResult.Ok(specSnapshot);
                 }
@@ -206,6 +229,118 @@
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Prometheus collection failed for AKS cluster {ClusterName}.", _options.ClusterName);
+                return null;
+            }
+        }
+
+        private async Task<AksPlatformSnapshot?> TryCollectFromMetricsApiAsync(
+            string clusterResourceId,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var config = KubernetesClientConfiguration.InClusterConfig();
+                using var client = new Kubernetes(config);
+
+                var workload = await ReadWorkloadSpecAsync(client, cancellationToken);
+                if (workload is null || workload.Template?.Spec?.Containers is null || workload.Template.Spec.Containers.Count == 0)
+                {
+                    return null;
+                }
+
+                var selector = BuildLabelSelector(workload.Template.Metadata?.Labels);
+                if (string.IsNullOrWhiteSpace(selector))
+                {
+                    selector = $"app={_options.WorkloadName}";
+                }
+
+                var podList = await client.CoreV1.ListNamespacedPodAsync(
+                    _options.Namespace,
+                    labelSelector: selector,
+                    cancellationToken: cancellationToken);
+
+                var matchingPods = podList.Items
+                    .Where(p => IsRunningWorkloadPod(p, _options.WorkloadName))
+                    .ToList();
+
+                if (matchingPods.Count == 0)
+                {
+                    return null;
+                }
+
+                var podMetricsList = await client.GetKubernetesPodsMetricsByNamespaceAsync(
+                    _options.Namespace);
+
+                var podMetricsByName = podMetricsList.Items
+                    .Where(m => m.Metadata?.Name is not null)
+                    .ToDictionary(m => m.Metadata!.Name!, StringComparer.OrdinalIgnoreCase);
+
+                var cpuUsageCores = 0d;
+                var memoryUsageMb = 0d;
+
+                foreach (var pod in matchingPods)
+                {
+                    var podName = pod.Metadata?.Name;
+                    if (string.IsNullOrWhiteSpace(podName) || !podMetricsByName.TryGetValue(podName, out var podMetrics))
+                    {
+                        continue;
+                    }
+
+                    foreach (var containerMetric in podMetrics.Containers ?? [])
+                    {
+                        if (!string.IsNullOrWhiteSpace(_options.ContainerName) &&
+                            !string.Equals(containerMetric.Name, _options.ContainerName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+
+                        cpuUsageCores += ParseCpuCores(containerMetric.Usage, "cpu");
+                        memoryUsageMb += ParseMemoryMb(containerMetric.Usage, "memory");
+                    }
+                }
+
+                var containers = string.IsNullOrWhiteSpace(_options.ContainerName)
+                    ? workload.Template.Spec.Containers
+                    : workload.Template.Spec.Containers
+                        .Where(c => string.Equals(c.Name, _options.ContainerName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                if (containers.Count == 0)
+                {
+                    return null;
+                }
+
+                var cpuRequestCores = containers.Sum(c => ParseCpuCores(c.Resources?.Requests, "cpu"));
+                var memoryRequestMb = containers.Sum(c => ParseMemoryMb(c.Resources?.Requests, "memory"));
+                var cpuLimitCores = containers.Sum(c => ParseCpuCores(c.Resources?.Limits, "cpu"));
+                var memoryLimitMb = containers.Sum(c => ParseMemoryMb(c.Resources?.Limits, "memory"));
+                var nodes = await QueryNodeSnapshotsFromKubernetesAsync(client, cancellationToken);
+
+                var snapshot = new AksPlatformSnapshot
+                {
+                    Platform = "AKS",
+                    WorkloadName = _options.WorkloadName,
+                    ResourceId = clusterResourceId,
+                    ClusterName = _options.ClusterName,
+                    Namespace = _options.Namespace,
+                    AdviceMode = AksAdviceMode.Full,
+                    CurrentReplicas = Math.Max(1, matchingPods.Count),
+                    CpuUsageCores = cpuUsageCores,
+                    MemoryUsageMb = memoryUsageMb,
+                    CpuRequestCores = cpuRequestCores,
+                    MemoryRequestMb = memoryRequestMb,
+                    CpuLimitCores = cpuLimitCores,
+                    MemoryLimitMb = memoryLimitMb,
+                    CollectedAtUtc = DateTimeOffset.UtcNow,
+                    Nodes = nodes
+                };
+
+                snapshot.Placement = EvaluateWithPrometheus(snapshot);
+                return snapshot;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Kubernetes Metrics API fallback failed for AKS cluster {ClusterName}.", _options.ClusterName);
                 return null;
             }
         }
@@ -595,8 +730,8 @@
                     ShouldIncreaseMemoryLimit = false,
                     RiskLevel = nodes.Count > 0 ? "High" : "Medium",
                     Reason = nodes.Count > 0
-                        ? "Prometheus is unavailable. Based on Kubernetes workload requests, no existing AKS node has enough free requested capacity."
-                        : "Prometheus is unavailable. Kubernetes workload requests and limits were collected, but node capacity could not be evaluated."
+                        ? "Prometheus and Metrics API are unavailable. Based on Kubernetes workload requests, no existing AKS node has enough free requested capacity."
+                        : "Prometheus and Metrics API are unavailable. Kubernetes workload requests and limits were collected, but node capacity could not be evaluated."
                 };
             }
 
@@ -626,8 +761,8 @@
                 ShouldIncreaseMemoryLimit = false,
                 RiskLevel = riskLevel,
                 Reason = cpuLimitCores > 0 || memoryLimitMb > 0
-                    ? "Prometheus is unavailable. Placement advice is based on Kubernetes workload requests/limits and current requested node capacity."
-                    : "Prometheus is unavailable. Placement advice is based on Kubernetes workload requests and current requested node capacity."
+                    ? "Prometheus and Metrics API are unavailable. Placement advice is based on Kubernetes workload requests/limits and current requested node capacity."
+                    : "Prometheus and Metrics API are unavailable. Placement advice is based on Kubernetes workload requests and current requested node capacity."
             };
         }
 
@@ -655,7 +790,7 @@
                 ShouldIncreaseCpuLimit = shouldIncreaseCpu,
                 ShouldIncreaseMemoryLimit = shouldIncreaseMemory,
                 RiskLevel = shouldIncreaseCpu || shouldIncreaseMemory ? "Medium" : "Low",
-                Reason = "Managed Prometheus is unavailable. Only limit pressure advice can be returned."
+                Reason = "Managed Prometheus, Metrics API, and Kubernetes workload metrics are unavailable. Only limit pressure advice can be returned."
             };
         }
 
@@ -746,6 +881,26 @@
             return false;
         }
 
+        private static string BuildLabelSelector(IDictionary<string, string>? labels)
+        {
+            if (labels is null || labels.Count == 0)
+            {
+                return string.Empty;
+            }
+
+            return string.Join(",", labels
+                .Where(kvp => !string.IsNullOrWhiteSpace(kvp.Key) && !string.IsNullOrWhiteSpace(kvp.Value))
+                .Select(kvp => $"{kvp.Key}={kvp.Value}"));
+        }
+
+        private static bool IsRunningWorkloadPod(V1Pod pod, string workloadName)
+        {
+            var podName = pod.Metadata?.Name ?? string.Empty;
+            var phase = pod.Status?.Phase ?? string.Empty;
+            return podName.StartsWith(workloadName + "-", StringComparison.OrdinalIgnoreCase)
+                   && string.Equals(phase, "Running", StringComparison.OrdinalIgnoreCase);
+        }
+
         private static double ParseCpuCores(IDictionary<string, ResourceQuantity>? quantities, string key)
         {
             if (quantities is null || !quantities.TryGetValue(key, out var quantity) || quantity is null)
@@ -753,10 +908,41 @@
                 return 0;
             }
 
-            var value = quantity.ToString();
+            return ParseCpuQuantityToCores(quantity.ToString());
+        }
+
+        private static double ParseMemoryMb(IDictionary<string, ResourceQuantity>? quantities, string key)
+        {
+            if (quantities is null || !quantities.TryGetValue(key, out var quantity) || quantity is null)
+            {
+                return 0;
+            }
+
+            return BytesToMb(ParseKubernetesMemoryBytes(quantity.ToString()));
+        }
+
+        private static double ParseCpuQuantityToCores(string? value)
+        {
             if (string.IsNullOrWhiteSpace(value))
             {
                 return 0;
+            }
+
+            value = value.Trim();
+            if (value.EndsWith('n'))
+            {
+                var nano = value[..^1];
+                return double.TryParse(nano, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedNano)
+                    ? parsedNano / 1_000_000_000d
+                    : 0;
+            }
+
+            if (value.EndsWith('u'))
+            {
+                var micro = value[..^1];
+                return double.TryParse(micro, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedMicro)
+                    ? parsedMicro / 1_000_000d
+                    : 0;
             }
 
             if (value.EndsWith('m'))
@@ -770,16 +956,6 @@
             return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
                 ? parsed
                 : 0;
-        }
-
-        private static double ParseMemoryMb(IDictionary<string, ResourceQuantity>? quantities, string key)
-        {
-            if (quantities is null || !quantities.TryGetValue(key, out var quantity) || quantity is null)
-            {
-                return 0;
-            }
-
-            return BytesToMb(ParseKubernetesMemoryBytes(quantity.ToString()));
         }
 
         private static double ParseKubernetesMemoryBytes(string? value)
