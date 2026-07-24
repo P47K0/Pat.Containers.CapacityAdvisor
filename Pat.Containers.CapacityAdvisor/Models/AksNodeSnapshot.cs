@@ -42,4 +42,24 @@ public sealed class AksNodeSnapshot
 
     public double MemoryLimitOvercommitPercent =>
         MemoryAllocatableMb <= 0 ? 0 : (MemoryLimitsMb / MemoryAllocatableMb) * 100d;
+
+    public double ProjectedCpuRequestSaturationPercent(double additionalCpuRequestCores) =>
+        CpuAllocatableCores <= 0
+            ? 100d
+            : ((CpuRequestedCores + additionalCpuRequestCores) / CpuAllocatableCores) * 100d;
+
+    public double ProjectedMemoryRequestSaturationPercent(double additionalMemoryRequestMb) =>
+        MemoryAllocatableMb <= 0
+            ? 100d
+            : ((MemoryRequestedMb + additionalMemoryRequestMb) / MemoryAllocatableMb) * 100d;
+
+    public double ProjectedCpuLiveUsagePercent(double additionalCpuUsageCores) =>
+        CpuAllocatableCores <= 0
+            ? 100d
+            : ((CpuUsageCores + additionalCpuUsageCores) / CpuAllocatableCores) * 100d;
+
+    public double ProjectedMemoryLiveUsagePercent(double additionalMemoryUsageMb) =>
+        MemoryAllocatableMb <= 0
+            ? 100d
+            : ((MemoryUsageMb + additionalMemoryUsageMb) / MemoryAllocatableMb) * 100d;
 }

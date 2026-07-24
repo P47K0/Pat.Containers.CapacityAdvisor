@@ -12,6 +12,7 @@
     using Pat.Containers.CapacityAdvisor.Models;
     using System.Globalization;
     using System.Net.Http.Headers;
+    using System.Text;
     using System.Text.Json;
 
     public sealed class AksPlatformMetricCollector : IPlatformMetricCollector
@@ -740,14 +741,33 @@
                                       snapshot.MemoryUsageMb / snapshot.MemoryLimitMb >= _options.LimitPressureThreshold;
 
             var candidate = snapshot.Nodes
-                .Where(n => snapshot.CpuRequestCores <= n.FreeCpuByRequests &&
+                .Where(n => n.Ready &&
+                            n.Schedulable &&
+                            snapshot.CpuRequestCores <= n.FreeCpuByRequests &&
                             snapshot.MemoryRequestMb <= n.FreeMemoryByRequestsMb)
                 .OrderByDescending(n => n.FreeCpuByRequests - snapshot.CpuRequestCores)
                 .ThenByDescending(n => n.FreeMemoryByRequestsMb - snapshot.MemoryRequestMb)
                 .FirstOrDefault();
 
+            var cluster = snapshot.ClusterCapacity;
+
             if (candidate is null)
             {
+                var noFitReason = cluster is null
+                    ? "No ready schedulable AKS node has enough free CPU and memory by requests for the current workload."
+                    : string.Format(
+                        CultureInfo.InvariantCulture,
+                        "No ready schedulable AKS node has enough free CPU and memory by requests for the current workload. " +
+                        "Cluster free capacity by requests is {0:F2} CPU cores and {1:F0} MB memory. " +
+                        "Cluster request saturation is {2:F1}% CPU and {3:F1}% memory. " +
+                        "Cluster limit overcommit is {4:F1}% CPU and {5:F1}% memory.",
+                        cluster.TotalFreeCpuByRequestsCores,
+                        cluster.TotalFreeMemoryByRequestsMb,
+                        cluster.CpuRequestSaturationPercent,
+                        cluster.MemoryRequestSaturationPercent,
+                        cluster.CpuLimitOvercommitPercent,
+                        cluster.MemoryLimitOvercommitPercent);
+
                 return new AksPlacementAdvice
                 {
                     Mode = AksAdviceMode.Full,
@@ -759,23 +779,87 @@
                     ShouldIncreaseCpuLimit = cpuLimitPressure,
                     ShouldIncreaseMemoryLimit = memoryLimitPressure,
                     RiskLevel = "High",
-                    Reason = "No AKS node has enough free allocatable CPU and memory for the current pod requests."
+                    Reason = noFitReason
                 };
             }
 
-            var projectedCpuRatio = candidate.CpuAllocatableCores <= 0
-                ? 1
-                : (candidate.CpuRequestedCores + snapshot.CpuRequestCores) / candidate.CpuAllocatableCores;
+            var projectedCpuRequestPercent =
+                candidate.ProjectedCpuRequestSaturationPercent(snapshot.CpuRequestCores);
 
-            var projectedMemoryRatio = candidate.MemoryAllocatableMb <= 0
-                ? 1
-                : (candidate.MemoryRequestedMb + snapshot.MemoryRequestMb) / candidate.MemoryAllocatableMb;
+            var projectedMemoryRequestPercent =
+                candidate.ProjectedMemoryRequestSaturationPercent(snapshot.MemoryRequestMb);
 
-            var riskLevel = projectedCpuRatio >= 0.9 || projectedMemoryRatio >= 0.9
-                ? "High"
-                : projectedCpuRatio >= 0.75 || projectedMemoryRatio >= 0.75
-                    ? "Medium"
-                    : "Low";
+            var projectedCpuLivePercent =
+                candidate.ProjectedCpuLiveUsagePercent(snapshot.CpuUsageCores);
+
+            var projectedMemoryLivePercent =
+                candidate.ProjectedMemoryLiveUsagePercent(snapshot.MemoryUsageMb);
+
+            var riskLevel =
+                projectedCpuRequestPercent >= 90 ||
+                projectedMemoryRequestPercent >= 90 ||
+                projectedCpuLivePercent >= 90 ||
+                projectedMemoryLivePercent >= 90 ||
+                candidate.MemoryLimitOvercommitPercent >= 130
+                    ? "High"
+                    : projectedCpuRequestPercent >= 75 ||
+                      projectedMemoryRequestPercent >= 75 ||
+                      projectedCpuLivePercent >= 75 ||
+                      projectedMemoryLivePercent >= 75 ||
+                      candidate.MemoryLimitOvercommitPercent >= 100 ||
+                      candidate.CpuLimitOvercommitPercent >= 150
+                        ? "Medium"
+                        : "Low";
+
+            var shouldSuggestNewNode =
+                riskLevel == "High" &&
+                cluster is not null &&
+                cluster.ReadySchedulableNodeCount > 0;
+
+            var reasonBuilder = new StringBuilder();
+            reasonBuilder.AppendFormat(
+                CultureInfo.InvariantCulture,
+                "The workload requests fit on node {0}. " +
+                "Free capacity by requests before placement is {1:F2} CPU cores and {2:F0} MB memory. " +
+                "Projected request saturation after placement is {3:F1}% CPU and {4:F1}% memory. " +
+                "Current live usage on that node is {5:F1}% CPU and {6:F1}% memory, and projected live usage after placement is {7:F1}% CPU and {8:F1}% memory. " +
+                "Current limit overcommit on that node is {9:F1}% CPU and {10:F1}% memory.",
+                candidate.NodeName,
+                candidate.FreeCpuByRequests,
+                candidate.FreeMemoryByRequestsMb,
+                projectedCpuRequestPercent,
+                projectedMemoryRequestPercent,
+                candidate.CpuLiveUsagePercent,
+                candidate.MemoryLiveUsagePercent,
+                projectedCpuLivePercent,
+                projectedMemoryLivePercent,
+                candidate.CpuLimitOvercommitPercent,
+                candidate.MemoryLimitOvercommitPercent);
+
+            if (cluster is not null)
+            {
+                reasonBuilder.AppendFormat(
+                    CultureInfo.InvariantCulture,
+                    " Cluster request saturation is {0:F1}% CPU and {1:F1}% memory. " +
+                    "Cluster limit overcommit is {2:F1}% CPU and {3:F1}% memory.",
+                    cluster.CpuRequestSaturationPercent,
+                    cluster.MemoryRequestSaturationPercent,
+                    cluster.CpuLimitOvercommitPercent,
+                    cluster.MemoryLimitOvercommitPercent);
+            }
+
+            if (shouldSuggestNewNode)
+            {
+                reasonBuilder.Append(" The workload can be scheduled, but post-placement risk is high enough that adding a node is the safer operational choice.");
+            }
+            else if (riskLevel == "Medium")
+            {
+                reasonBuilder.Append(" The workload fits, but remaining headroom is getting tighter.");
+            }
+            else
+            {
+                reasonBuilder.Append(" The workload fits with acceptable headroom.");
+            }
 
             return new AksPlacementAdvice
             {
@@ -783,14 +867,12 @@
                 CanAssessNodeFit = true,
                 CanAssessNeedForNewNode = true,
                 FitsExistingNode = true,
-                NeedsNewNode = false,
+                NeedsNewNode = shouldSuggestNewNode,
                 RecommendedNode = candidate.NodeName,
                 ShouldIncreaseCpuLimit = cpuLimitPressure,
                 ShouldIncreaseMemoryLimit = memoryLimitPressure,
-                RiskLevel = riskLevel,
-                Reason = riskLevel == "Low"
-                    ? "The workload requests fit on an existing AKS node."
-                    : "The workload requests fit on an existing AKS node, but remaining headroom is limited."
+                RiskLevel = shouldSuggestNewNode ? "High" : riskLevel,
+                Reason = reasonBuilder.ToString()
             };
         }
 
