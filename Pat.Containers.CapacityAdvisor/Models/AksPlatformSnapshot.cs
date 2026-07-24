@@ -9,5 +9,6 @@ namespace Pat.Containers.CapacityAdvisor.Models
         public string Namespace { get; set; } = "";
         public List<AksNodeSnapshot> Nodes { get; set; } = [];
         public AksPlacementAdvice Placement { get; set; } = new();
+        public AksClusterCapacitySnapshot? ClusterCapacity { get; internal set; }
     }
 }

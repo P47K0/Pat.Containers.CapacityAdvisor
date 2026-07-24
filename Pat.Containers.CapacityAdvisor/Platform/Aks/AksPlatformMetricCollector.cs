@@ -204,6 +204,8 @@
                     return null;
                 }
 
+                var clusterCapacity = BuildClusterCapacity(nodes);
+
                 var snapshot = new AksPlatformSnapshot
                 {
                     Platform = "AKS",
@@ -220,7 +222,8 @@
                     CpuLimitCores = cpuLimit ?? 0,
                     MemoryLimitMb = BytesToMb(memoryLimitBytes),
                     CollectedAtUtc = DateTimeOffset.UtcNow,
-                    Nodes = nodes
+                    Nodes = nodes,
+                    ClusterCapacity = clusterCapacity
                 };
 
                 snapshot.Placement = EvaluateWithPrometheus(snapshot);
@@ -316,6 +319,8 @@
                 var memoryLimitMb = containers.Sum(c => ParseMemoryMb(c.Resources?.Limits, "memory"));
                 var nodes = await QueryNodeSnapshotsFromKubernetesAsync(client, cancellationToken);
 
+                var clusterCapacity = BuildClusterCapacity(nodes);
+
                 var snapshot = new AksPlatformSnapshot
                 {
                     Platform = "AKS",
@@ -332,7 +337,8 @@
                     CpuLimitCores = cpuLimitCores,
                     MemoryLimitMb = memoryLimitMb,
                     CollectedAtUtc = DateTimeOffset.UtcNow,
-                    Nodes = nodes
+                    Nodes = nodes,
+                    ClusterCapacity = clusterCapacity
                 };
 
                 snapshot.Placement = EvaluateWithPrometheus(snapshot);
@@ -379,6 +385,8 @@
                 var replicas = workload.Replicas > 0 ? workload.Replicas : 1;
                 var nodes = await QueryNodeSnapshotsFromKubernetesAsync(client, cancellationToken);
 
+                var clusterCapacity = BuildClusterCapacity(nodes);
+
                 var snapshot = new AksPlatformSnapshot
                 {
                     Platform = "AKS",
@@ -396,6 +404,7 @@
                     MemoryLimitMb = memoryLimitMb,
                     CollectedAtUtc = DateTimeOffset.UtcNow,
                     Nodes = nodes,
+                    ClusterCapacity = clusterCapacity,
                     Placement = EvaluateSpecOnly(
                         cpuRequestCores,
                         memoryRequestMb,
@@ -567,10 +576,13 @@
             return nodes.Values.OrderBy(n => n.NodeName).ToList();
         }
 
-        private async Task<List<AksNodeSnapshot>> QueryNodeSnapshotsFromKubernetesAsync(Kubernetes client, CancellationToken cancellationToken)
+        private async Task<List<AksNodeSnapshot>> QueryNodeSnapshotsFromKubernetesAsync(
+    Kubernetes client,
+    CancellationToken cancellationToken)
         {
             var nodeList = await client.CoreV1.ListNodeAsync(cancellationToken: cancellationToken);
             var podList = await client.CoreV1.ListPodForAllNamespacesAsync(cancellationToken: cancellationToken);
+            var nodeMetrics = await GetNodeMetricsAsync(client, cancellationToken);
 
             var nodes = new Dictionary<string, AksNodeSnapshot>(StringComparer.OrdinalIgnoreCase);
 
@@ -586,8 +598,16 @@
                 {
                     NodeName = nodeName,
                     CpuAllocatableCores = ParseCpuCores(node.Status?.Allocatable, "cpu"),
-                    MemoryAllocatableMb = ParseMemoryMb(node.Status?.Allocatable, "memory")
+                    MemoryAllocatableMb = ParseMemoryMb(node.Status?.Allocatable, "memory"),
+                    Ready = IsNodeReady(node),
+                    Schedulable = !node.Spec?.Unschedulable.GetValueOrDefault() ?? true
                 };
+
+                if (nodeMetrics.TryGetValue(nodeName, out var metric))
+                {
+                    snapshot.CpuUsageCores = ParseCpuQuantityToCores(metric.Usage.TryGetValue("cpu", out var cpu) ? cpu : null);
+                    snapshot.MemoryUsageMb = BytesToMb(ParseKubernetesMemoryBytes(metric.Usage.TryGetValue("memory", out var memory) ? memory : null));
+                }
 
                 nodes[nodeName] = snapshot;
             }
@@ -600,20 +620,91 @@
                     continue;
                 }
 
-                var containers = pod.Spec?.Containers;
-                if (containers is null)
+                if (ShouldSkipPodForCapacityAccounting(pod))
                 {
                     continue;
                 }
 
-                foreach (var container in containers)
+                foreach (var container in pod.Spec?.Containers ?? [])
                 {
                     node.CpuRequestedCores += ParseCpuCores(container.Resources?.Requests, "cpu");
                     node.MemoryRequestedMb += ParseMemoryMb(container.Resources?.Requests, "memory");
+                    node.CpuLimitsCores += ParseCpuCores(container.Resources?.Limits, "cpu");
+                    node.MemoryLimitsMb += ParseMemoryMb(container.Resources?.Limits, "memory");
+                }
+
+                foreach (var initContainer in pod.Spec?.InitContainers ?? [])
+                {
+                    node.CpuRequestedCores += ParseCpuCores(initContainer.Resources?.Requests, "cpu");
+                    node.MemoryRequestedMb += ParseMemoryMb(initContainer.Resources?.Requests, "memory");
+                    node.CpuLimitsCores += ParseCpuCores(initContainer.Resources?.Limits, "cpu");
+                    node.MemoryLimitsMb += ParseMemoryMb(initContainer.Resources?.Limits, "memory");
                 }
             }
 
-            return nodes.Values.OrderBy(n => n.NodeName).ToList();
+            return nodes.Values
+                .Where(n => n.Ready && n.Schedulable)
+                .OrderBy(n => n.NodeName)
+                .ToList();
+        }
+
+        private static bool IsNodeReady(V1Node node)
+        {
+            var readyCondition = node.Status?.Conditions?
+                .FirstOrDefault(c => string.Equals(c.Type, "Ready", StringComparison.OrdinalIgnoreCase));
+
+            return string.Equals(readyCondition?.Status, "True", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool ShouldSkipPodForCapacityAccounting(V1Pod pod)
+        {
+            var phase = pod.Status?.Phase ?? string.Empty;
+
+            if (string.Equals(phase, "Succeeded", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(phase, "Failed", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private static AksClusterCapacitySnapshot BuildClusterCapacity(IReadOnlyCollection<AksNodeSnapshot> nodes)
+        {
+            var readyNodes = nodes.Where(n => n.Ready && n.Schedulable).ToList();
+
+            return new AksClusterCapacitySnapshot
+            {
+                TotalNodeCount = nodes.Count,
+                ReadySchedulableNodeCount = readyNodes.Count,
+                TotalCpuAllocatableCores = readyNodes.Sum(n => n.CpuAllocatableCores),
+                TotalMemoryAllocatableMb = readyNodes.Sum(n => n.MemoryAllocatableMb),
+                TotalCpuUsageCores = readyNodes.Sum(n => n.CpuUsageCores),
+                TotalMemoryUsageMb = readyNodes.Sum(n => n.MemoryUsageMb),
+                TotalCpuRequestedCores = readyNodes.Sum(n => n.CpuRequestedCores),
+                TotalMemoryRequestedMb = readyNodes.Sum(n => n.MemoryRequestedMb),
+                TotalCpuLimitsCores = readyNodes.Sum(n => n.CpuLimitsCores),
+                TotalMemoryLimitsMb = readyNodes.Sum(n => n.MemoryLimitsMb)
+            };
+        }
+
+        private async Task<Dictionary<string, KubernetesNodeMetricItem>> GetNodeMetricsAsync(
+    Kubernetes client,
+    CancellationToken cancellationToken)
+        {
+            var raw = await client.CustomObjects.ListClusterCustomObjectAsync(
+                group: "metrics.k8s.io",
+                version: "v1beta1",
+                plural: "nodes",
+                cancellationToken: cancellationToken);
+
+            var json = JsonSerializer.Serialize(raw, JsonOptions);
+            var metrics = JsonSerializer.Deserialize<KubernetesNodeMetricList>(json, JsonOptions);
+
+            return metrics?.Items?
+                .Where(x => !string.IsNullOrWhiteSpace(x.Metadata?.Name))
+                .ToDictionary(x => x.Metadata!.Name!, StringComparer.OrdinalIgnoreCase)
+                ?? new Dictionary<string, KubernetesNodeMetricItem>(StringComparer.OrdinalIgnoreCase);
         }
 
         private async Task<KubernetesWorkloadSpec?> ReadWorkloadSpecAsync(Kubernetes client, CancellationToken cancellationToken)
@@ -1061,6 +1152,24 @@
         {
             public int Replicas { get; set; }
             public V1PodTemplateSpec? Template { get; set; }
+        }
+
+        private sealed class KubernetesNodeMetricList
+        {
+            public List<KubernetesNodeMetricItem> Items { get; set; } = [];
+        }
+
+        private sealed class KubernetesNodeMetricItem
+        {
+            public KubernetesObjectMetadata? Metadata { get; set; }
+            public Dictionary<string, string> Usage { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            public DateTimeOffset Timestamp { get; set; }
+            public string Window { get; set; } = string.Empty;
+        }
+
+        private sealed class KubernetesObjectMetadata
+        {
+            public string Name { get; set; } = string.Empty;
         }
     }
 }

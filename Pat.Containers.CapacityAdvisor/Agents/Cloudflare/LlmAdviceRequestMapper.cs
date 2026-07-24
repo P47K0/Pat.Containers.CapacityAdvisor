@@ -32,6 +32,8 @@ namespace Pat.Containers.CapacityAdvisor.Agents.Cloudflare
                 CurrentReplicas = snapshot.CurrentReplicas,
                 CpuUsagePercent = CalculatePercent(snapshot.CpuUsageCores, snapshot.CpuLimitCores),
                 MemoryUsagePercent = CalculatePercent(snapshot.MemoryUsageMb, snapshot.MemoryLimitMb),
+                CpuUsageCores = snapshot.CpuUsageCores,
+                MemoryUsageMb = snapshot.MemoryUsageMb,
                 CpuRequestCores = snapshot.CpuRequestCores,
                 CpuLimitCores = snapshot.CpuLimitCores,
                 MemoryRequestMb = snapshot.MemoryRequestMb,
@@ -46,6 +48,8 @@ namespace Pat.Containers.CapacityAdvisor.Agents.Cloudflare
             string deterministicStatus,
             string deterministicReason)
         {
+            var placement = snapshot.Placement;
+
             var request = new LlmAdviceRequest
             {
                 Platform = snapshot.Platform,
@@ -53,6 +57,8 @@ namespace Pat.Containers.CapacityAdvisor.Agents.Cloudflare
                 CurrentReplicas = snapshot.CurrentReplicas,
                 CpuUsagePercent = CalculatePercent(snapshot.CpuUsageCores, snapshot.CpuLimitCores),
                 MemoryUsagePercent = CalculatePercent(snapshot.MemoryUsageMb, snapshot.MemoryLimitMb),
+                CpuUsageCores = snapshot.CpuUsageCores,
+                MemoryUsageMb = snapshot.MemoryUsageMb,
                 CpuRequestCores = snapshot.CpuRequestCores,
                 CpuLimitCores = snapshot.CpuLimitCores,
                 MemoryRequestMb = snapshot.MemoryRequestMb,
@@ -60,21 +66,36 @@ namespace Pat.Containers.CapacityAdvisor.Agents.Cloudflare
                 DeterministicStatus = deterministicStatus,
                 DeterministicReason = deterministicReason,
                 AdviceMode = snapshot.AdviceMode.ToString(),
-                CanAssessNodeFit = snapshot.Placement.CanAssessNodeFit,
-                CanAssessNeedForNewNode = snapshot.Placement.CanAssessNeedForNewNode,
-                FitsExistingNode = snapshot.Placement.FitsExistingNode,
-                NeedsNewNode = snapshot.Placement.NeedsNewNode,
-                RecommendedNode = snapshot.Placement.RecommendedNode,
+                CanAssessNodeFit = placement?.CanAssessNodeFit ?? false,
+                CanAssessNeedForNewNode = placement?.CanAssessNeedForNewNode ?? false,
+                FitsExistingNode = placement?.FitsExistingNode ?? false,
+                NeedsNewNode = placement?.NeedsNewNode ?? false,
+                RecommendedNode = placement?.RecommendedNode,
+                ClusterCapacity = snapshot.ClusterCapacity,
                 Nodes = snapshot.Nodes
                     .Select(n => new LlmNodeAdviceInput
                     {
                         NodeName = n.NodeName,
                         CpuAllocatableCores = n.CpuAllocatableCores,
                         MemoryAllocatableMb = n.MemoryAllocatableMb,
+                        CpuUsageCores = n.CpuUsageCores,
+                        MemoryUsageMb = n.MemoryUsageMb,
                         CpuRequestedCores = n.CpuRequestedCores,
                         MemoryRequestedMb = n.MemoryRequestedMb,
+                        CpuLimitsCores = n.CpuLimitsCores,
+                        MemoryLimitsMb = n.MemoryLimitsMb,
                         FreeCpuByRequests = n.FreeCpuByRequests,
-                        FreeMemoryByRequestsMb = n.FreeMemoryByRequestsMb
+                        FreeMemoryByRequestsMb = n.FreeMemoryByRequestsMb,
+                        FreeCpuByLiveUsage = n.FreeCpuByLiveUsage,
+                        FreeMemoryByLiveUsageMb = n.FreeMemoryByLiveUsageMb,
+                        CpuRequestSaturationPercent = n.CpuRequestSaturationPercent,
+                        MemoryRequestSaturationPercent = n.MemoryRequestSaturationPercent,
+                        CpuLiveUsagePercent = n.CpuLiveUsagePercent,
+                        MemoryLiveUsagePercent = n.MemoryLiveUsagePercent,
+                        CpuLimitOvercommitPercent = n.CpuLimitOvercommitPercent,
+                        MemoryLimitOvercommitPercent = n.MemoryLimitOvercommitPercent,
+                        Ready = n.Ready,
+                        Schedulable = n.Schedulable
                     })
                     .ToList()
             };
@@ -86,6 +107,7 @@ namespace Pat.Containers.CapacityAdvisor.Agents.Cloudflare
                 request.FitsExistingNode = false;
                 request.NeedsNewNode = false;
                 request.RecommendedNode = null;
+                request.ClusterCapacity = null;
                 request.Nodes.Clear();
             }
 
