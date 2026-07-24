@@ -4,6 +4,8 @@
     using Azure.Identity;
     using Azure.ResourceManager;
     using Azure.ResourceManager.ContainerService;
+    using k8s;
+    using k8s.Models;
     using Microsoft.Extensions.Options;
     using Pat.Containers.CapacityAdvisor.Contracts;
     using Pat.Containers.CapacityAdvisor.Enums;
@@ -59,9 +61,22 @@
                     }
 
                     _logger.LogWarning(
-                        "Prometheus query endpoint configured but no usable data returned for AKS cluster {ClusterName}. Falling back to limit-only advice.",
+                        "Prometheus query endpoint configured but no usable data returned for AKS cluster {ClusterName}. Falling back to Kubernetes workload spec.",
                         _options.ClusterName);
                 }
+
+                var specSnapshot = await TryCollectFromKubernetesSpecAsync(
+                    clusterResourceId.ToString(),
+                    cancellationToken);
+
+                if (specSnapshot is not null)
+                {
+                    return MetricCollectionResult.Ok(specSnapshot);
+                }
+
+                _logger.LogWarning(
+                    "Kubernetes workload spec fallback returned no usable data for AKS cluster {ClusterName}. Falling back to limit-only advice.",
+                    _options.ClusterName);
 
                 var fallbackSnapshot = await CollectLimitOnlySnapshotAsync(
                     clusterResourceId.ToString(),
@@ -156,6 +171,74 @@
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Prometheus collection failed for AKS cluster {ClusterName}.", _options.ClusterName);
+                return null;
+            }
+        }
+
+        private async Task<AksPlatformSnapshot?> TryCollectFromKubernetesSpecAsync(
+            string clusterResourceId,
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                var config = KubernetesClientConfiguration.InClusterConfig();
+                using var client = new Kubernetes(config);
+
+                var workload = await ReadWorkloadSpecAsync(client, cancellationToken);
+                if (workload is null || workload.Template?.Spec?.Containers is null || workload.Template.Spec.Containers.Count == 0)
+                {
+                    return null;
+                }
+
+                var containers = string.IsNullOrWhiteSpace(_options.ContainerName)
+                    ? workload.Template.Spec.Containers
+                    : workload.Template.Spec.Containers
+                        .Where(c => string.Equals(c.Name, _options.ContainerName, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                if (containers.Count == 0)
+                {
+                    return null;
+                }
+
+                var cpuRequestCores = containers.Sum(c => ParseCpuCores(c.Resources?.Requests, "cpu"));
+                var memoryRequestMb = containers.Sum(c => ParseMemoryMb(c.Resources?.Requests, "memory"));
+                var cpuLimitCores = containers.Sum(c => ParseCpuCores(c.Resources?.Limits, "cpu"));
+                var memoryLimitMb = containers.Sum(c => ParseMemoryMb(c.Resources?.Limits, "memory"));
+
+                var replicas = workload.Replicas > 0 ? workload.Replicas : 1;
+                var nodes = await QueryNodeSnapshotsFromKubernetesAsync(client, cancellationToken);
+
+                var snapshot = new AksPlatformSnapshot
+                {
+                    Platform = "AKS",
+                    WorkloadName = _options.WorkloadName,
+                    ResourceId = clusterResourceId,
+                    ClusterName = _options.ClusterName,
+                    Namespace = _options.Namespace,
+                    AdviceMode = AksAdviceMode.LimitOnly,
+                    CurrentReplicas = replicas,
+                    CpuUsageCores = 0,
+                    MemoryUsageMb = 0,
+                    CpuRequestCores = cpuRequestCores,
+                    MemoryRequestMb = memoryRequestMb,
+                    CpuLimitCores = cpuLimitCores,
+                    MemoryLimitMb = memoryLimitMb,
+                    CollectedAtUtc = DateTimeOffset.UtcNow,
+                    Nodes = nodes,
+                    Placement = EvaluateSpecOnly(
+                        cpuRequestCores,
+                        memoryRequestMb,
+                        cpuLimitCores,
+                        memoryLimitMb,
+                        nodes)
+                };
+
+                return snapshot;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Kubernetes API workload spec fallback failed for AKS cluster {ClusterName}.", _options.ClusterName);
                 return null;
             }
         }
@@ -314,6 +397,79 @@
             return nodes.Values.OrderBy(n => n.NodeName).ToList();
         }
 
+        private async Task<List<AksNodeSnapshot>> QueryNodeSnapshotsFromKubernetesAsync(Kubernetes client, CancellationToken cancellationToken)
+        {
+            var nodeList = await client.CoreV1.ListNodeAsync(cancellationToken: cancellationToken);
+            var podList = await client.CoreV1.ListPodForAllNamespacesAsync(cancellationToken: cancellationToken);
+
+            var nodes = new Dictionary<string, AksNodeSnapshot>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (var node in nodeList.Items)
+            {
+                var nodeName = node.Metadata?.Name;
+                if (string.IsNullOrWhiteSpace(nodeName))
+                {
+                    continue;
+                }
+
+                var snapshot = new AksNodeSnapshot
+                {
+                    NodeName = nodeName,
+                    CpuAllocatableCores = ParseCpuCores(node.Status?.Allocatable, "cpu"),
+                    MemoryAllocatableMb = ParseMemoryMb(node.Status?.Allocatable, "memory")
+                };
+
+                nodes[nodeName] = snapshot;
+            }
+
+            foreach (var pod in podList.Items)
+            {
+                var nodeName = pod.Spec?.NodeName;
+                if (string.IsNullOrWhiteSpace(nodeName) || !nodes.TryGetValue(nodeName, out var node))
+                {
+                    continue;
+                }
+
+                var containers = pod.Spec?.Containers;
+                if (containers is null)
+                {
+                    continue;
+                }
+
+                foreach (var container in containers)
+                {
+                    node.CpuRequestedCores += ParseCpuCores(container.Resources?.Requests, "cpu");
+                    node.MemoryRequestedMb += ParseMemoryMb(container.Resources?.Requests, "memory");
+                }
+            }
+
+            return nodes.Values.OrderBy(n => n.NodeName).ToList();
+        }
+
+        private async Task<KubernetesWorkloadSpec?> ReadWorkloadSpecAsync(Kubernetes client, CancellationToken cancellationToken)
+        {
+            var ns = _options.Namespace;
+            var workloadName = _options.WorkloadName;
+            var workloadKind = _options.WorkloadKind?.Trim();
+
+            if (string.Equals(workloadKind, "StatefulSet", StringComparison.OrdinalIgnoreCase))
+            {
+                var statefulSet = await client.AppsV1.ReadNamespacedStatefulSetAsync(workloadName, ns, cancellationToken: cancellationToken);
+                return new KubernetesWorkloadSpec
+                {
+                    Replicas = statefulSet.Spec?.Replicas ?? 1,
+                    Template = statefulSet.Spec?.Template
+                };
+            }
+
+            var deployment = await client.AppsV1.ReadNamespacedDeploymentAsync(workloadName, ns, cancellationToken: cancellationToken);
+            return new KubernetesWorkloadSpec
+            {
+                Replicas = deployment.Spec?.Replicas ?? 1,
+                Template = deployment.Spec?.Template
+            };
+        }
+
         private AksPlacementAdvice EvaluateWithPrometheus(AksPlatformSnapshot snapshot)
         {
             var cpuLimitPressure = snapshot.CpuLimitCores > 0 &&
@@ -374,6 +530,69 @@
                 Reason = riskLevel == "Low"
                     ? "The workload requests fit on an existing AKS node."
                     : "The workload requests fit on an existing AKS node, but remaining headroom is limited."
+            };
+        }
+
+        private AksPlacementAdvice EvaluateSpecOnly(
+            double cpuRequestCores,
+            double memoryRequestMb,
+            double cpuLimitCores,
+            double memoryLimitMb,
+            IReadOnlyCollection<AksNodeSnapshot> nodes)
+        {
+            var candidate = nodes
+                .Where(n => cpuRequestCores <= n.FreeCpuByRequests && memoryRequestMb <= n.FreeMemoryByRequestsMb)
+                .OrderByDescending(n => n.FreeCpuByRequests - cpuRequestCores)
+                .ThenByDescending(n => n.FreeMemoryByRequestsMb - memoryRequestMb)
+                .FirstOrDefault();
+
+            if (candidate is null)
+            {
+                return new AksPlacementAdvice
+                {
+                    Mode = AksAdviceMode.LimitOnly,
+                    CanAssessNodeFit = nodes.Count > 0,
+                    CanAssessNeedForNewNode = nodes.Count > 0,
+                    FitsExistingNode = false,
+                    NeedsNewNode = nodes.Count > 0,
+                    RecommendedNode = null,
+                    ShouldIncreaseCpuLimit = false,
+                    ShouldIncreaseMemoryLimit = false,
+                    RiskLevel = nodes.Count > 0 ? "High" : "Medium",
+                    Reason = nodes.Count > 0
+                        ? "Prometheus is unavailable. Based on Kubernetes workload requests, no existing AKS node has enough free requested capacity."
+                        : "Prometheus is unavailable. Kubernetes workload requests and limits were collected, but node capacity could not be evaluated."
+                };
+            }
+
+            var projectedCpuRatio = candidate.CpuAllocatableCores <= 0
+                ? 1
+                : (candidate.CpuRequestedCores + cpuRequestCores) / candidate.CpuAllocatableCores;
+
+            var projectedMemoryRatio = candidate.MemoryAllocatableMb <= 0
+                ? 1
+                : (candidate.MemoryRequestedMb + memoryRequestMb) / candidate.MemoryAllocatableMb;
+
+            var riskLevel = projectedCpuRatio >= 0.9 || projectedMemoryRatio >= 0.9
+                ? "High"
+                : projectedCpuRatio >= 0.75 || projectedMemoryRatio >= 0.75
+                    ? "Medium"
+                    : "Low";
+
+            return new AksPlacementAdvice
+            {
+                Mode = AksAdviceMode.LimitOnly,
+                CanAssessNodeFit = true,
+                CanAssessNeedForNewNode = true,
+                FitsExistingNode = true,
+                NeedsNewNode = false,
+                RecommendedNode = candidate.NodeName,
+                ShouldIncreaseCpuLimit = false,
+                ShouldIncreaseMemoryLimit = false,
+                RiskLevel = riskLevel,
+                Reason = cpuLimitCores > 0 || memoryLimitMb > 0
+                    ? "Prometheus is unavailable. Placement advice is based on Kubernetes workload requests/limits and current requested node capacity."
+                    : "Prometheus is unavailable. Placement advice is based on Kubernetes workload requests and current requested node capacity."
             };
         }
 
@@ -492,6 +711,97 @@
             return false;
         }
 
+        private static double ParseCpuCores(IDictionary<string, ResourceQuantity>? quantities, string key)
+        {
+            if (quantities is null || !quantities.TryGetValue(key, out var quantity) || quantity is null)
+            {
+                return 0;
+            }
+
+            var value = quantity.ToString();
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return 0;
+            }
+
+            if (value.EndsWith('m'))
+            {
+                var milli = value[..^1];
+                return double.TryParse(milli, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedMilli)
+                    ? parsedMilli / 1000d
+                    : 0;
+            }
+
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                ? parsed
+                : 0;
+        }
+
+        private static double ParseMemoryMb(IDictionary<string, ResourceQuantity>? quantities, string key)
+        {
+            if (quantities is null || !quantities.TryGetValue(key, out var quantity) || quantity is null)
+            {
+                return 0;
+            }
+
+            return BytesToMb(ParseKubernetesMemoryBytes(quantity.ToString()));
+        }
+
+        private static double ParseKubernetesMemoryBytes(string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                return 0;
+            }
+
+            value = value.Trim();
+            var binarySuffixes = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Ki"] = 1024d,
+                ["Mi"] = 1024d * 1024d,
+                ["Gi"] = 1024d * 1024d * 1024d,
+                ["Ti"] = 1024d * 1024d * 1024d * 1024d,
+                ["Pi"] = 1024d * 1024d * 1024d * 1024d * 1024d,
+                ["Ei"] = 1024d * 1024d * 1024d * 1024d * 1024d * 1024d
+            };
+
+            foreach (var suffix in binarySuffixes)
+            {
+                if (value.EndsWith(suffix.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    var numericPart = value[..^suffix.Key.Length];
+                    return double.TryParse(numericPart, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                        ? parsed * suffix.Value
+                        : 0;
+                }
+            }
+
+            var decimalSuffixes = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["K"] = 1000d,
+                ["M"] = 1000d * 1000d,
+                ["G"] = 1000d * 1000d * 1000d,
+                ["T"] = 1000d * 1000d * 1000d * 1000d,
+                ["P"] = 1000d * 1000d * 1000d * 1000d * 1000d,
+                ["E"] = 1000d * 1000d * 1000d * 1000d * 1000d * 1000d
+            };
+
+            foreach (var suffix in decimalSuffixes)
+            {
+                if (value.EndsWith(suffix.Key, StringComparison.OrdinalIgnoreCase))
+                {
+                    var numericPart = value[..^suffix.Key.Length];
+                    return double.TryParse(numericPart, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed)
+                        ? parsed * suffix.Value
+                        : 0;
+                }
+            }
+
+            return double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var rawBytes)
+                ? rawBytes
+                : 0;
+        }
+
         private static string EscapeLabelValue(string value) =>
             value.Replace("\\", "\\\\", StringComparison.Ordinal)
                  .Replace("\"", "\\\"", StringComparison.Ordinal);
@@ -535,6 +845,11 @@
                 }
             }
         }
-    }
 
+        private sealed class KubernetesWorkloadSpec
+        {
+            public int Replicas { get; set; }
+            public V1PodTemplateSpec? Template { get; set; }
+        }
+    }
 }
