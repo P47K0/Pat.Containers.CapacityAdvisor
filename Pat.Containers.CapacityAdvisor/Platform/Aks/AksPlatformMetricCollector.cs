@@ -57,6 +57,18 @@
 
                     if (prometheusSnapshot is not null)
                     {
+                        _logger.LogInformation(
+                            "Fetched AKS metrics via Prometheus for cluster {ClusterName}, namespace {Namespace}, workload {WorkloadName}. Replicas={Replicas}, CpuUsageCores={CpuUsageCores}, MemoryUsageMb={MemoryUsageMb}, CpuRequestCores={CpuRequestCores}, MemoryRequestMb={MemoryRequestMb}, CpuLimitCores={CpuLimitCores}, MemoryLimitMb={MemoryLimitMb}",
+                            prometheusSnapshot.ClusterName,
+                            prometheusSnapshot.Namespace,
+                            prometheusSnapshot.WorkloadName,
+                            prometheusSnapshot.CurrentReplicas,
+                            prometheusSnapshot.CpuUsageCores,
+                            prometheusSnapshot.MemoryUsageMb,
+                            prometheusSnapshot.CpuRequestCores,
+                            prometheusSnapshot.MemoryRequestMb,
+                            prometheusSnapshot.CpuLimitCores,
+                            prometheusSnapshot.MemoryLimitMb);
                         return MetricCollectionResult.Ok(prometheusSnapshot);
                     }
 
@@ -71,6 +83,19 @@
 
                 if (specSnapshot is not null)
                 {
+                    _logger.LogInformation(
+                        "Fetched AKS workload spec via Kubernetes API for cluster {ClusterName}, namespace {Namespace}, workload {WorkloadName}. Replicas={Replicas}, CpuRequestCores={CpuRequestCores}, MemoryRequestMb={MemoryRequestMb}, CpuLimitCores={CpuLimitCores}, MemoryLimitMb={MemoryLimitMb}, NodeCount={NodeCount}",
+                        specSnapshot.ClusterName,
+                        specSnapshot.Namespace,
+                        specSnapshot.WorkloadName,
+                        specSnapshot.CurrentReplicas,
+                        specSnapshot.CpuRequestCores,
+                        specSnapshot.MemoryRequestMb,
+                        specSnapshot.CpuLimitCores,
+                        specSnapshot.MemoryLimitMb,
+                        specSnapshot.Nodes.Count);
+
+
                     return MetricCollectionResult.Ok(specSnapshot);
                 }
 
@@ -81,6 +106,16 @@
                 var fallbackSnapshot = await CollectLimitOnlySnapshotAsync(
                     clusterResourceId.ToString(),
                     cancellationToken);
+
+                _logger.LogInformation(
+                    "Fetched limit-only AKS snapshot for cluster {ClusterName}, namespace {Namespace}, workload {WorkloadName}. CpuUsageCores={CpuUsageCores}, MemoryUsageMb={MemoryUsageMb}, CpuLimitCores={CpuLimitCores}, MemoryLimitMb={MemoryLimitMb}",
+                    fallbackSnapshot.ClusterName,
+                    fallbackSnapshot.Namespace,
+                    fallbackSnapshot.WorkloadName,
+                    fallbackSnapshot.CpuUsageCores,
+                    fallbackSnapshot.MemoryUsageMb,
+                    fallbackSnapshot.CpuLimitCores,
+                    fallbackSnapshot.MemoryLimitMb);
 
                 return MetricCollectionResult.Ok(fallbackSnapshot);
             }
