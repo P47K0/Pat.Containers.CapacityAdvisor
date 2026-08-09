@@ -114,6 +114,25 @@ var app = builder.Build();
 
 app.UseForwardedHeaders();
 
+app.Use(async (context, next) =>
+{
+    app.Logger.LogInformation(
+        "Incoming request: {Method} {Path}, Scheme={Scheme}, ContentType={ContentType}, ContentLength={ContentLength}",
+        context.Request.Method,
+        context.Request.Path,
+        context.Request.Scheme,
+        context.Request.ContentType,
+        context.Request.ContentLength);
+
+    await next();
+
+    app.Logger.LogInformation(
+        "Request completed: {Method} {Path}, StatusCode={StatusCode}",
+        context.Request.Method,
+        context.Request.Path,
+        context.Response.StatusCode);
+});
+
 app.MapHub<AdvisorHub>("/hubs/advisor");
 
 // Configure the HTTP request pipeline.

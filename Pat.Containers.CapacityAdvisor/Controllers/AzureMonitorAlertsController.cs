@@ -33,13 +33,6 @@ namespace Pat.Containers.CapacityAdvisor.Controllers
             [FromBody] AzureMonitorCommonAlert payload,
             CancellationToken cancellationToken)
         {
-            if (payload?.Data?.Essentials is null)
-            {
-                _logger.LogWarning("Received invalid Azure Monitor common alert payload: {Payload}", payload);
-
-                return BadRequest("Invalid Azure Monitor common alert payload.");
-            }
-
             _logger.LogInformation(
             "Webhook request: Scheme={Scheme}, Host={Host}, RemoteIp={RemoteIp}, " +
             "Method={Method}, Path={Path}, ContentType={ContentType}, ContentLength={ContentLength}",
@@ -50,6 +43,13 @@ namespace Pat.Containers.CapacityAdvisor.Controllers
             HttpContext.Request.Path,
             HttpContext.Request.ContentType,
             HttpContext.Request.ContentLength);
+
+            if (payload?.Data?.Essentials is null)
+            {
+                _logger.LogWarning("Received invalid Azure Monitor common alert payload: {Payload}", payload);
+
+                return BadRequest("Invalid Azure Monitor common alert payload.");
+            }            
 
             await _alertService.HandleAsync(payload, cancellationToken);
 
