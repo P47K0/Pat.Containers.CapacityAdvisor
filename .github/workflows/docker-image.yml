@@ -31,6 +31,12 @@ jobs:
 
       ASSESSMENT_API_KEY: ${{ secrets.ASSESSMENT_API_KEY }}
 
+      AZUREAD__TENANTID: ${{ secrets.AZURE_TENANT_ID }}
+      AZUREAD__CLIENTID: ${{ secrets.AZUREAD_CLIENTID }}
+      AZUREAD__AUDIENCE: ${{ secrets.AZUREAD_AUDIENCE }}
+
+      CONNECTIONSTRINGS__ALERTSTORAGE: ${{ secrets.ALERTSTORAGE_CONN_STRING }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -97,6 +103,10 @@ jobs:
                 AiAgent__Url="$AIAGENT__URL" \
                 AiAgent__ApiKey="$AIAGENT__API_KEY" \
                 AssessmentApiKey="$ASSESSMENT_API_KEY" \
+                AzureAd__TenantId="$AZUREAD__TENANTID" \
+                AzureAd__ClientId="$AZUREAD__CLIENTID" \
+                AzureAd__Audience="$AZUREAD__AUDIENCE" \
+                ConnectionStrings__AlertStorage="$CONNECTIONSTRINGS__ALERTSTORAGE" \
               --revision-suffix "adv-${{ github.run_number }}"
           else
             echo "Container App does not exist → Creating..."
@@ -121,5 +131,9 @@ jobs:
                 PlatformCollectors__Aca__MetricWindowMinutes="$PLATFORMCOLLECTORS__ACA__METRICWINDOWMINUTES" \
                 AiAgent__Url="$AIAGENT__URL" \
                 AiAgent__ApiKey="$AIAGENT__API_KEY" \
-                AssessmentApiKey="$ASSESSMENT_API_KEY"
+                AssessmentApiKey="$ASSESSMENT_API_KEY" \
+                AzureAd__TenantId="$AZUREAD__TENANTID" \
+                AzureAd__ClientId="$AZUREAD__CLIENTID" \
+                AzureAd__Audience="$AZUREAD__AUDIENCE" \
+                ConnectionStrings__AlertStorage="$CONNECTIONSTRINGS__ALERTSTORAGE"
           fi
