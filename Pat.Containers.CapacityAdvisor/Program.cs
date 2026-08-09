@@ -113,10 +113,13 @@ var app = builder.Build();
 
 app.UseForwardedHeaders();
 
+app.UseRouting();
+
 app.Use(async (context, next) =>
 {
     app.Logger.LogInformation(
-        "Incoming request: {Method} {Path}, Scheme={Scheme}, ContentType={ContentType}, ContentLength={ContentLength}",
+        "Incoming request: {Method} {Path}, Scheme={Scheme}, " +
+        "ContentType={ContentType}, ContentLength={ContentLength}",
         context.Request.Method,
         context.Request.Path,
         context.Request.Scheme,
@@ -131,14 +134,6 @@ app.Use(async (context, next) =>
         context.Request.Path,
         context.Response.StatusCode);
 });
-
-app.MapHub<AdvisorHub>("/hubs/advisor");
-
-// Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
-{
-    app.MapOpenApi();
-}
 
 app.UseAuthentication();
 
@@ -158,16 +153,26 @@ app.Use(async (context, next) =>
 
 app.UseAuthorization();
 
+if (app.Environment.IsDevelopment())
+{
+    app.MapOpenApi();
+}
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseMiddleware<WebhookRequestLoggingMiddleware>();
 
+app.UseWhen(
+    ctx =>
+        ctx.Request.Path.StartsWithSegments("/api/assessment/run") ||
+        ctx.Request.Path.StartsWithSegments("/api/metrics") ||
+        ctx.Request.Path.StartsWithSegments("/api/alerts/status") ||
+        ctx.Request.Path.StartsWithSegments("/api/alerts/recommendation"),
+    branch => branch.UseMiddleware<ApiKeyCheckMiddleware>());
+
+app.MapHub<AdvisorHub>("/hubs/advisor");
 app.MapControllers();
 app.MapHealthChecks("/health");
-
-app.UseWhen(
-    ctx => ctx.Request.Path.StartsWithSegments("/api/assessment/run") || ctx.Request.Path.StartsWithSegments("/api/metrics") || ctx.Request.Path.StartsWithSegments("/api/alerts/status") || ctx.Request.Path.StartsWithSegments("/api/alerts/recommendation"),
-    branch => branch.UseMiddleware<ApiKeyCheckMiddleware>());
 
 app.Run();
