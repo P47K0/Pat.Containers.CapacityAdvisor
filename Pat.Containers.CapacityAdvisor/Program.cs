@@ -57,7 +57,14 @@ else
     .AddMicrosoftIdentityWebApi(
         builder.Configuration.GetSection("AzureAd"));
 
-builder.Services.AddAuthorizationBuilder()
+    builder.Services.Configure<MicrosoftIdentityOptions>(
+        JwtBearerDefaults.AuthenticationScheme,
+        options =>
+        {
+            options.AllowWebApiToBeAuthorizedByACL = true;
+        });
+
+    builder.Services.AddAuthorizationBuilder()
     .AddPolicy("AzureMonitorSecureWebhook", policy =>
     {
         policy.AuthenticationSchemes.Add(
