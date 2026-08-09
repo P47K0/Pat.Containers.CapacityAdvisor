@@ -53,7 +53,6 @@ else
         .AddPolicy("AzureMonitorSecureWebhook", policy =>
         {
             policy.RequireAuthenticatedUser();
-            policy.RequireClaim("roles", "CapacityAdvisor.AlertSender");
         });
 }
 
@@ -142,6 +141,21 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseAuthentication();
+
+app.Use(async (context, next) =>
+{
+    var identity = context.User.Identity;
+
+    app.Logger.LogInformation(
+        "After authentication: IsAuthenticated={IsAuthenticated}, " +
+        "AuthenticationType={AuthenticationType}, ClaimTypes={ClaimTypes}",
+        identity?.IsAuthenticated,
+        identity?.AuthenticationType,
+        string.Join(", ", context.User.Claims.Select(c => c.Type)));
+
+    await next();
+});
+
 app.UseAuthorization();
 
 app.UseSwagger();
