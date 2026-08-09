@@ -26,15 +26,15 @@ public sealed class LocalDemoMetricCollector : IPlatformMetricCollector
 
             var snapshot = new PlatformSnapshot
             {
-                Platform = "ACA",
+                Platform = "Local",
                 CollectedAtUtc = _timeProvider.GetUtcNow(),
                 EnvironmentName = "local",
                 WorkloadName = "demo-app",
                 CurrentReplicas = 1,
-                CpuUsageCores = 0.15,
+                CpuUsageCores = 0.48,
                 CpuRequestCores = 0.25,
                 CpuLimitCores = 0.50,
-                MemoryUsageMb = 220,
+                MemoryUsageMb = 510,
                 MemoryRequestMb = 256,
                 MemoryLimitMb = 512
             };

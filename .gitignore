@@ -361,3 +361,4 @@ MigrationBackup/
 
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
+/Pat.Containers.CapacityAdvisor/appsettings.Development.json
