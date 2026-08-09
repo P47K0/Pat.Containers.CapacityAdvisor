@@ -113,8 +113,6 @@ var app = builder.Build();
 
 app.UseForwardedHeaders();
 
-app.UseRouting();
-
 app.Use(async (context, next) =>
 {
     app.Logger.LogInformation(
