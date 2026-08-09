@@ -118,6 +118,8 @@ app.UseAuthorization();
 app.UseSwagger();
 app.UseSwaggerUI();
 
+app.UseMiddleware<WebhookRequestLoggingMiddleware>();
+
 app.MapControllers();
 app.MapHealthChecks("/health");
 

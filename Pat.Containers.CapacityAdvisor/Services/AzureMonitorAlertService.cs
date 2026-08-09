@@ -1,4 +1,5 @@
-﻿using Pat.Containers.CapacityAdvisor.Models;
+﻿using Azure.Data.Tables;
+using Pat.Containers.CapacityAdvisor.Models;
 using Pat.Containers.CapacityAdvisor.Models.Webhook;
 using Pat.Containers.CapacityAdvisor.Storage;
 using System.Text.Json;
@@ -44,6 +45,10 @@ public sealed class AzureMonitorAlertService : IAzureMonitorAlertService
             signalType,
             payload);
 
+        _logger.LogInformation(
+            "Alert payload parsed. Workload={Workload}",       
+            workloadName);
+
         var exists = await _historyRepository.ExistsAsync(
             entity.PartitionKey,
             entity.ExternalAlertId,
@@ -58,6 +63,11 @@ public sealed class AzureMonitorAlertService : IAzureMonitorAlertService
         }
 
         await _historyRepository.AddAsync(entity, cancellationToken);
+
+        _logger.LogInformation(
+    "Alert written. PartitionKey={PartitionKey}, RowKey={RowKey}",
+    entity.PartitionKey,
+    entity.RowKey);
 
         if (!string.Equals(entity.MonitorCondition, "Fired", StringComparison.OrdinalIgnoreCase))
         {
@@ -82,6 +92,8 @@ public sealed class AzureMonitorAlertService : IAzureMonitorAlertService
         entity.WorkloadName,
         entity.SignalType,
         assessment.Recommendation);
+
+        _logger.LogInformation("Writing alert to table");
 
         await _statusRepository.UpsertAsync(
             CapacityStatusMapper.Map(
@@ -153,7 +165,8 @@ public sealed class AzureMonitorAlertService : IAzureMonitorAlertService
         => TryFindDimensionValue(context, "namespace") ?? string.Empty;
 
     private static string TryGetWorkloadName(JsonElement context)
-        => TryFindDimensionValue(context, "deployment") ??
+        => TryFindDimensionValue(context, "workloadName") ?? 
+           TryFindDimensionValue(context, "deployment") ??
            TryFindDimensionValue(context, "workload") ??
            TryFindDimensionValue(context, "pod") ??
            string.Empty;
