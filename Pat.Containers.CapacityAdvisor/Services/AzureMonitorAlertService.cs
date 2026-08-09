@@ -162,13 +162,18 @@ public sealed class AzureMonitorAlertService : IAzureMonitorAlertService
     }
 
     private static string TryGetNamespace(JsonElement context)
-        => TryFindDimensionValue(context, "namespace") ?? string.Empty;
+        => TryFindDimensionValue(context, "namespace") ??
+        TryGetMetricDimension(context, "namespace") ??
+        string.Empty;
 
     private static string TryGetWorkloadName(JsonElement context)
         => TryFindDimensionValue(context, "workloadName") ?? 
            TryFindDimensionValue(context, "deployment") ??
            TryFindDimensionValue(context, "workload") ??
            TryFindDimensionValue(context, "pod") ??
+           TryGetMetricDimension(context, "workloadName") ??
+           TryGetMetricDimension(context, "workload") ??
+           TryGetMetricDimension(context, "pod") ??
            string.Empty;
 
     private static string? TryFindDimensionValue(JsonElement context, string name)
@@ -204,6 +209,35 @@ public sealed class AzureMonitorAlertService : IAzureMonitorAlertService
                         return dimValue.GetString();
                     }
                 }
+            }
+        }
+
+        return null;
+    }
+
+    private static string? TryGetMetricDimension(
+    JsonElement context,
+    string name)
+    {
+        if (!context.TryGetProperty("condition", out var condition) ||
+            !condition.TryGetProperty("allOf", out var allOf) ||
+            allOf.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var criterion in allOf.EnumerateArray())
+        {
+            if (!criterion.TryGetProperty("dimensions", out var dimensions) ||
+                dimensions.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            if (dimensions.TryGetProperty(name, out var value) &&
+                value.ValueKind == JsonValueKind.String)
+            {
+                return value.GetString();
             }
         }
 
