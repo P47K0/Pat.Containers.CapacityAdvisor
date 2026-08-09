@@ -46,14 +46,25 @@ if (builder.Environment.IsDevelopment() &&
 else
 {
     builder.Services
-        .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-        .AddMicrosoftIdentityWebApi(builder.Configuration.GetSection("AzureAd"));
+    .AddAuthentication(options =>
+    {
+        options.DefaultAuthenticateScheme =
+            JwtBearerDefaults.AuthenticationScheme;
 
-    builder.Services.AddAuthorizationBuilder()
-        .AddPolicy("AzureMonitorSecureWebhook", policy =>
-        {
-            policy.RequireAuthenticatedUser();
-        });
+        options.DefaultChallengeScheme =
+            JwtBearerDefaults.AuthenticationScheme;
+    })
+    .AddMicrosoftIdentityWebApi(
+        builder.Configuration.GetSection("AzureAd"));
+
+builder.Services.AddAuthorizationBuilder()
+    .AddPolicy("AzureMonitorSecureWebhook", policy =>
+    {
+        policy.AuthenticationSchemes.Add(
+            JwtBearerDefaults.AuthenticationScheme);
+
+        policy.RequireAuthenticatedUser();
+    });
 }
 
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
@@ -137,18 +148,25 @@ app.UseAuthentication();
 
 app.Use(async (context, next) =>
 {
-    var identity = context.User.Identity;
+    var result = await context.AuthenticateAsync(
+        JwtBearerDefaults.AuthenticationScheme);
 
     app.Logger.LogInformation(
-        "After authentication: IsAuthenticated={IsAuthenticated}, " +
-        "AuthenticationType={AuthenticationType}, ClaimTypes={ClaimTypes}",
-        identity?.IsAuthenticated,
-        identity?.AuthenticationType,
-        string.Join(", ", context.User.Claims.Select(c => c.Type)));
+        "Explicit authentication: Succeeded={Succeeded}, " +
+        "None={None}, Failure={Failure}, PrincipalAuthenticated={PrincipalAuthenticated}",
+        result.Succeeded,
+        result.None,
+        result.Failure?.Message,
+        result.Principal?.Identity?.IsAuthenticated);
+
+    app.Logger.LogInformation(
+        "HttpContext.User: IsAuthenticated={IsAuthenticated}, " +
+        "AuthenticationType={AuthenticationType}",
+        context.User.Identity?.IsAuthenticated,
+        context.User.Identity?.AuthenticationType);
 
     await next();
 });
-
 app.UseAuthorization();
 
 if (app.Environment.IsDevelopment())
