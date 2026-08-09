@@ -16,13 +16,15 @@ namespace Pat.Containers.CapacityAdvisor.Controllers
         private readonly ICapacityStatusRepository _statusRepository;
         private readonly ICapacityAdvisorService _capacityAdvisorService;
         private readonly IAlertHistoryRepository _alertHistoryRepository;
+        private readonly ILogger<AzureMonitorAlertsController> _logger;
 
-        public AzureMonitorAlertsController(IAzureMonitorAlertService alertService, ICapacityStatusRepository statusRepository, ICapacityAdvisorService capacityAdvisorService, IAlertHistoryRepository alertHistoryRepository)
+        public AzureMonitorAlertsController(ILogger<AzureMonitorAlertsController> logger, IAzureMonitorAlertService alertService, ICapacityStatusRepository statusRepository, ICapacityAdvisorService capacityAdvisorService, IAlertHistoryRepository alertHistoryRepository)
         {
             _alertService = alertService;
             _statusRepository = statusRepository;
             _capacityAdvisorService = capacityAdvisorService;
             _alertHistoryRepository = alertHistoryRepository;
+            _logger = logger;
         }
 
         [HttpPost]
@@ -33,10 +35,24 @@ namespace Pat.Containers.CapacityAdvisor.Controllers
         {
             if (payload?.Data?.Essentials is null)
             {
+                _logger.LogWarning("Received invalid Azure Monitor common alert payload: {Payload}", payload);
+
                 return BadRequest("Invalid Azure Monitor common alert payload.");
             }
 
+            _logger.LogInformation(
+            "Webhook request: Scheme={Scheme}, Host={Host}, RemoteIp={RemoteIp}, " +
+            "Method={Method}, Path={Path}, ContentType={ContentType}, ContentLength={ContentLength}",
+            HttpContext.Request.Scheme,
+            HttpContext.Request.Host,
+            HttpContext.Connection.RemoteIpAddress,
+            HttpContext.Request.Method,
+            HttpContext.Request.Path,
+            HttpContext.Request.ContentType,
+            HttpContext.Request.ContentLength);
+
             await _alertService.HandleAsync(payload, cancellationToken);
+
             return Ok();
         }
 

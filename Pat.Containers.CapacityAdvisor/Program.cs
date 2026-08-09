@@ -1,6 +1,7 @@
 using Azure.Data.Tables;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 using Microsoft.Identity.Web;
 using Pat.Containers.CapacityAdvisor.Agents.Cloudflare;
@@ -101,7 +102,17 @@ builder.Services.AddSingleton(_ => new TableClient(
 builder.Services.AddScoped<IAlertHistoryRepository, TableAlertHistoryRepository>();
 builder.Services.AddScoped<ICapacityStatusRepository, TableCapacityStatusRepository>();
 
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders =
+        ForwardedHeaders.XForwardedFor |
+        ForwardedHeaders.XForwardedProto |
+        ForwardedHeaders.XForwardedHost;
+});
+
 var app = builder.Build();
+
+app.UseForwardedHeaders();
 
 app.MapHub<AdvisorHub>("/hubs/advisor");
 
@@ -111,7 +122,6 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
