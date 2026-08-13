@@ -307,21 +307,15 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
         """;
     }
 
-    private LlmAdviceResponse? ParseAdviceResponse(
-        string content)
+    private LlmAdviceResponse? ParseAdviceResponse(string content)
     {
         try
         {
-            using var document =
-                JsonDocument.Parse(content);
-
+            using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
 
-            if (root.TryGetProperty(
-                    "success",
-                    out var successElement) &&
-                successElement.ValueKind ==
-                JsonValueKind.False)
+            if (root.TryGetProperty("success", out var successElement) &&
+                successElement.ValueKind == JsonValueKind.False)
             {
                 _logger.LogWarning(
                     "Cloudflare AI returned success=false. Body: {Body}",
@@ -330,9 +324,7 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
                 return null;
             }
 
-            if (!root.TryGetProperty(
-                    "result",
-                    out var resultElement))
+            if (!root.TryGetProperty("result", out var resultElement))
             {
                 _logger.LogWarning(
                     "Cloudflare AI response did not contain a result property. Body: {Body}",
@@ -341,8 +333,33 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
                 return null;
             }
 
-            var jsonText =
-                ExtractJsonText(resultElement);
+            // Try to get response as object directly
+            if (resultElement.ValueKind == JsonValueKind.Object &&
+                resultElement.TryGetProperty("response", out var responseElement) &&
+                responseElement.ValueKind == JsonValueKind.Object)
+            {
+                var advice = JsonSerializer.Deserialize<LlmAdviceResponse>(
+                    responseElement,
+                    JsonOptions);
+
+                if (advice is not null &&
+                    !string.IsNullOrWhiteSpace(advice.Severity) &&
+                    !string.IsNullOrWhiteSpace(advice.OperatorSummary) &&
+                    !string.IsNullOrWhiteSpace(advice.RecommendedAction) &&
+                    !string.IsNullOrWhiteSpace(advice.Reasoning))
+                {
+                    return advice;
+                }
+
+                _logger.LogWarning(
+                    "Cloudflare AI returned incomplete advice JSON. Body: {Body}",
+                    responseElement.GetRawText());
+
+                return null;
+            }
+
+            // Fallback to string extraction
+            var jsonText = ExtractJsonText(resultElement);
 
             if (string.IsNullOrWhiteSpace(jsonText))
             {
@@ -353,9 +370,7 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
                 return null;
             }
 
-            if (jsonText.Contains(
-                    "JSON Mode couldn't be met",
-                    StringComparison.OrdinalIgnoreCase))
+            if (jsonText.Contains("JSON Mode couldn't be met", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning(
                     "Cloudflare AI could not satisfy JSON mode. Body: {Body}",
@@ -364,16 +379,15 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
                 return null;
             }
 
-            var advice =
-                JsonSerializer.Deserialize<LlmAdviceResponse>(
-                    jsonText,
-                    JsonOptions);
+            var adviceFromString = JsonSerializer.Deserialize<LlmAdviceResponse>(
+                jsonText,
+                JsonOptions);
 
-            if (advice is null ||
-                string.IsNullOrWhiteSpace(advice.Severity) ||
-                string.IsNullOrWhiteSpace(advice.OperatorSummary) ||
-                string.IsNullOrWhiteSpace(advice.RecommendedAction) ||
-                string.IsNullOrWhiteSpace(advice.Reasoning))
+            if (adviceFromString is null ||
+                string.IsNullOrWhiteSpace(adviceFromString.Severity) ||
+                string.IsNullOrWhiteSpace(adviceFromString.OperatorSummary) ||
+                string.IsNullOrWhiteSpace(adviceFromString.RecommendedAction) ||
+                string.IsNullOrWhiteSpace(adviceFromString.Reasoning))
             {
                 _logger.LogWarning(
                     "Cloudflare AI returned incomplete advice JSON. Body: {Body}",
@@ -382,7 +396,7 @@ public sealed class CloudflareAdviceService : IAdviceExplanationService
                 return null;
             }
 
-            return advice;
+            return adviceFromString;
         }
         catch (JsonException ex)
         {
